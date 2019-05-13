@@ -1,4 +1,4 @@
-(** *ISWIM: An extension of the Lambda Calculus*)
+(** *ISWIM: Lots of extensions to the Lambda Calculus*)
 (**
    Author : Ivan Quiles
    Note:
@@ -17,13 +17,6 @@ Require Import Coq.Lists.List.
 Import ListNotations.
 Require Import Coq.Init.Datatypes.
 
-(**
-  Here we define our new constants as a Type. Currently it's just booleans and
-  natural numbers but this can be extended with other primitive values. 
- *)
-Inductive constant : Type :=
-| bnum : nat -> constant
-| bbool : bool -> constant.
 
 (**
    Here are the terms of our language. The first three terms are from the
@@ -37,10 +30,11 @@ Inductive constant : Type :=
    inductive relation above relation.
  *)
 Inductive term : Type :=
+| tnum : nat -> term
+| tbool : bool -> term
 | tvar : string -> term
 | tapp : term -> term -> term
 | tabs : string -> term -> term
-| tconst : constant -> term
 | tproc : procedure -> term
 | tif : term -> term -> term -> term
   with
@@ -54,8 +48,10 @@ procedure : Type :=
 Inductive value : term -> Prop :=
 | v_var : forall s,
     value (tvar s)
-| v_const : forall v,
-    value (tconst v)
+| v_num: forall v,
+    value (tnum v)
+| v_bool : forall v,
+    value (tbool v)
 | v_abs : forall s x,
     value (tabs s x).
 (**
@@ -99,13 +95,14 @@ Fixpoint list_of_values (l:list term): Prop :=
 Reserved Notation "'[' x ':=' s ']' t" (at level 20).
 Fixpoint subst (x:string) (s:term) (t:term) : term :=
   match t with
+  | tbool x => tbool x
+  | tnum x => tnum x
   | tvar x' =>
       if eqb x x' then s else t
   | tabs x' t1 =>
       tabs x' (if eqb x x' then t1 else ([x:=s] t1))
   | tapp t1 t2 =>
     tapp ([x:=s] t1) ([x:=s] t2)
-  | tconst x => tconst x
   | tproc p => match p with
               | p => match p with
                     | proc x ts => tproc (proc x (map (subst x s) ts))
@@ -128,38 +125,38 @@ Open Scope list_scope.
  *)
 Inductive procStep : procedure -> term -> Prop :=
 | PROC_Add1 : forall x n,
-    x = tconst (bnum n) -> 
-    procStep (proc "add1" (x::nil)) ((tconst (bnum (n+1))))
+    x = tnum n -> 
+    procStep (proc "add1" (x::nil)) (tnum (n+1))
 | PROC_Sub1 : forall x n ,
-    x = tconst (bnum n) -> 
-    procStep (proc "sub1" (x::nil)) ((tconst (bnum (n-1))))
+    x = tnum n -> 
+    procStep (proc "sub1" (x::nil)) (tnum (n-1))
 | PROC_Iszero : forall x n y,
-    x = tconst(bnum n) ->
+    x = tnum n ->
     y = (if Nat.eqb n 0 then true else false) -> 
-    procStep (proc "iszero" (x::nil)) ((tconst (bbool y)))
+    procStep (proc "iszero" (x::nil)) (tbool y)
 | PROC_add : forall x y n m,
-    x = tconst(bnum n) ->
-    y = tconst(bnum m) ->
-    procStep (proc "+" (x::(y::nil))) (tconst(bnum(n+m)))
+    x = tnum n ->
+    y = tnum m ->
+    procStep (proc "+" (x::(y::nil))) (tnum(n+m))
 | PROC_sub : forall x y n m,
-    x = tconst(bnum n) ->
-    y = tconst(bnum m) ->
-    procStep (proc "-" (x::(y::nil))) (tconst(bnum(n-m)))
+    x = tnum n ->
+    y = tnum m ->
+    procStep (proc "-" (x::(y::nil))) (tnum(n-m))
 | PROC_mult : forall x y n m,
-    x = tconst(bnum n) ->
-    y = tconst(bnum m) ->
-    procStep (proc "*" (x:: (y::nil))) (tconst(bnum(n*m)))
+    x = tnum n ->
+    y = tnum m ->
+    procStep (proc "*" (x:: (y::nil))) (tnum(n*m))
 | PROC_band : forall x y a b,
-    x = tconst(bbool a) ->
-    y = tconst(bbool b) ->
-    procStep (proc "band" (x::(y::nil))) (tconst (bbool (andb a b)))
+    x = tbool a ->
+    y = tbool b ->
+    procStep (proc "band" (x::(y::nil))) (tbool (andb a b))
 | PROC_bor : forall x y a b,
-    x = tconst(bbool a) ->
-    y = tconst(bbool b) ->
-    procStep (proc "bor" (x::(y::nil))) (tconst (bbool (orb a b)))
+    x = tbool a ->
+    y = tbool b ->
+    procStep (proc "bor" (x::(y::nil))) (tbool (orb a b))
 | PROC_bnot : forall x a ,
-    x = tconst(bbool a) ->
-    procStep (proc "bor" (x::nil)) (tconst (bbool (negb a))).
+    x = tbool a ->
+    procStep (proc "bor" (x::nil)) (tbool (negb a)).
 (**
    This function will reduce lists of terms to values (hopefully)
    small step.
@@ -180,7 +177,7 @@ Inductive multi {X:Type} (R: relation X) : relation X :=
 (**
    Here we have our relation that defines a small step semantics.
    Currently handles:
-   - All normal Lambda calclus application rules
+   - All normal Lambda calculus application rules
    - Added If statements that worked with the constant  booleans.
    - Two procedure rules:
       + The first takes a list of values and a procedure name and
@@ -203,11 +200,11 @@ Inductive step : term -> term -> Prop :=
     (tapp v1 t2) ==> (tapp v1 t2')
 | ISWIM_If_True : forall v1 t1 t2,
     value v1 ->
-    v1 = tconst(bbool true) ->
+    v1 = (tbool true) ->
     (tif v1 t1 t2) ==> t1
 | ISWIM_If_False: forall v1 t1 t2,
     value v1 ->
-    v1 = tconst(bbool false) ->
+    v1 =(tbool false) ->
     (tif v1 t1 t2 ) ==> t2
 | ISWIM_If_Abs: forall t1 t1' t2 t3,
     t1 ==> t1' -> 
@@ -231,7 +228,7 @@ reduceList : list term -> list term -> Prop :=
     reduceList (v::xs) (v::ts)
 | reduceTerm : forall  t ts x xs,
     x ==> t ->
-    reduceList xs ts -> 
+    reduceList xs ts ->
     reduceList (x::xs) (t::ts)
 where "t1 '==>' t2" := (step t1 t2).
 (**
@@ -245,14 +242,14 @@ Notation "t1 '==>*' t2" := (multistep t1 t2) (at level 40).
    This first example just adds a constant by one.
  *)
 Lemma proc_example1 :
-  (tproc (proc "add1" [(tconst (bnum 5))])) ==>* (tconst (bnum 6)).
+  (tproc (proc "add1" [(tnum 5)])) ==>* (tnum 6).
 Proof.
   eapply multi_step.
   apply ISWIM_Proc_Abs.
   - unfold list_of_values. split.
     constructor. constructor.
   - constructor.
-  - apply PROC_Add1 with (x := tconst(bnum 5)) .
+  - apply PROC_Add1 with (x := (tnum 5)) .
     + simpl. reflexivity.
   - simpl. constructor.
 Qed.
@@ -261,7 +258,7 @@ Qed.
  This next example takes two constants and multiplies them together
  *)
 Lemma proc_example2 :
-  (tproc (proc "*" [(tconst (bnum 2));(tconst (bnum 3))])) ==>* (tconst (bnum 6)).
+  (tproc (proc "*" [(tnum 2);(tnum 3)])) ==>* (tnum 6).
 Proof.
   eapply multi_step.
   apply ISWIM_Proc_Abs.
@@ -280,7 +277,7 @@ Qed.
  *)
 
 Lemma proc_example3 :
-  (tproc (proc "add1" [(tapp (tabs "x" (tvar "x")) (tconst (bnum 2)))])) ==>* (tconst (bnum 3)).
+  (tproc (proc "add1" [(tapp (tabs "x" (tvar "x")) (tnum 2))])) ==>* (tnum 3).
 Proof.
   eapply multi_step.
   apply ISWIM_Proc_App.
@@ -290,7 +287,7 @@ Proof.
     + constructor.
   - simpl. eapply multi_step.
     + constructor.
-      * repeat constructor.
+      * constructor. constructor. constructor.
       * constructor.
       * eapply PROC_Add1. constructor.
     + simpl. constructor.
@@ -302,7 +299,7 @@ Qed.
    ambiguitities in my implementation of step.
  *)
 Lemma proc_example4 :
- (tproc (proc "band" [((tconst (bbool true)));(tproc (proc "iszero" [(tconst (bnum 1))]))])) ==>* (tconst (bbool false)).
+ (tproc (proc "band" [(tbool true);(tproc (proc "iszero" [(tnum 1)]))])) ==>* (tbool false).
 Proof.
   eapply multi_step.
   apply ISWIM_Proc_App.
@@ -320,7 +317,9 @@ Qed.
 Definition normal_form {X:Type} (R:relation X) (t:X) : Prop :=
   not (exists t', R t t').
 
-
+(**
+   Small Lemma to show that values cannot be reduced any further.
+ *)
 Lemma value_is_nf : forall v, value v -> normal_form step v.
 Proof.
   intros. unfold normal_form. intros F.
