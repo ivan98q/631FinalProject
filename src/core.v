@@ -27,7 +27,7 @@ Inductive constant : Type :=
 
 (**
    Here are the terms of our language. The first three terms are from the
-   regular lambda calclus. However we now have new terms for constants and for
+   regular lambda calculus. However we now have new terms for constants and for
    procedures. Procedures are the built in functions of this ISWIM programming
    language. We will soon define some built in procedures.
 
@@ -41,7 +41,8 @@ Inductive term : Type :=
 | tapp : term -> term -> term
 | tabs : string -> term -> term
 | tconst : constant -> term
-| tproc : procedure -> term 
+| tproc : procedure -> term
+| tif : term -> term -> term -> term
   with
 procedure : Type :=
 | proc : string -> list term -> procedure.
@@ -72,14 +73,29 @@ Inductive def_proc :  string -> Prop :=
 | p_sub :
     def_proc ("-")
 | p_mul :
-    def_proc ("*").
+    def_proc ("*")
+| p_or :
+    def_proc "bor"
+| p_and :
+    def_proc "band"
+| p_not:
+    def_proc "bnot".
 
+(**
+This Fixpoint is important later on when defining step to see if everything
+ in this list is a valid value. I only process procedures as soon as a list
+ of terms is reduced to a list of values.
+ *)
 Fixpoint list_of_values (l:list term): Prop :=
   match l with
   | nil => True
   | x :: xs => (value x) /\ list_of_values xs
   end.
 
+(**
+   This is lambda calclus subsitution. Not very interestings besides
+   that procedures get the subsitution applied to all parameters.
+ *)
 Reserved Notation "'[' x ':=' s ']' t" (at level 20).
 Fixpoint subst (x:string) (s:term) (t:term) : term :=
   match t with
@@ -95,52 +111,63 @@ Fixpoint subst (x:string) (s:term) (t:term) : term :=
                     | proc x ts => tproc (proc x (map (subst x s) ts))
                     end
               end
+  | tif t1 t2 t3 => tif ([x:=s]t1) ([x:=s]t2) ([x:=s]t3)
   end
 where "'[' x ':=' s ']' t" := (subst x s t).
 
 Open Scope list_scope.
+(**
+   This is how procedures are converted into equivalent Coq expressions.
+   This relation is used in the small step reduction of ISWIM below.
+   Includes:
+   - add1
+   - sub1
+   - IsZero
+   - +,-,*
+   - And,Or, Not
+ *)
 Inductive procStep : procedure -> term -> Prop :=
-| PROC_Add1 : forall x n ts,
-    1 = length ts ->
-    In x ts -> 
+| PROC_Add1 : forall x n,
     x = tconst (bnum n) -> 
-    procStep (proc "add1" ts) ((tconst (bnum (n+1))))
-| PROC_Sub1 : forall x n ts,
-    1 = length ts ->
-    In x ts -> 
+    procStep (proc "add1" (x::nil)) ((tconst (bnum (n+1))))
+| PROC_Sub1 : forall x n ,
     x = tconst (bnum n) -> 
-    procStep (proc "sub1" ts) ((tconst (bnum (n-1))))
-| PROC_Iszero : forall ts x n y,
-    1 = length ts ->
-    In x ts ->
+    procStep (proc "sub1" (x::nil)) ((tconst (bnum (n-1))))
+| PROC_Iszero : forall x n y,
     x = tconst(bnum n) ->
     y = (if Nat.eqb n 0 then true else false) -> 
-    procStep (proc "iszero" ts) ((tconst (bbool y)))
-| PROC_add : forall ts x y n m,
-    2 = length ts ->
-    In x ts /\ In y ts ->
+    procStep (proc "iszero" (x::nil)) ((tconst (bbool y)))
+| PROC_add : forall x y n m,
     x = tconst(bnum n) ->
     y = tconst(bnum m) ->
-    procStep (proc "+" ts) (tconst(bnum(n+m)))
-| PROC_sub : forall ts x y n m,
-    2 = length ts ->
-    In x ts /\ In y ts ->
+    procStep (proc "+" (x::(y::nil))) (tconst(bnum(n+m)))
+| PROC_sub : forall x y n m,
     x = tconst(bnum n) ->
     y = tconst(bnum m) ->
-    procStep (proc "-" ts) (tconst(bnum(n-m)))
-| PROC_mult : forall ts x y n m,
-    2 = length ts ->
-    In x ts /\ In y ts ->
+    procStep (proc "-" (x::(y::nil))) (tconst(bnum(n-m)))
+| PROC_mult : forall x y n m,
     x = tconst(bnum n) ->
     y = tconst(bnum m) ->
-    procStep (proc "*" ts) (tconst(bnum(n*m))).
+    procStep (proc "*" (x:: (y::nil))) (tconst(bnum(n*m)))
+| PROC_band : forall x y a b,
+    x = tconst(bbool a) ->
+    y = tconst(bbool b) ->
+    procStep (proc "band" (x::(y::nil))) (tconst (bbool (andb a b)))
+| PROC_bor : forall x y a b,
+    x = tconst(bbool a) ->
+    y = tconst(bbool b) ->
+    procStep (proc "bor" (x::(y::nil))) (tconst (bbool (orb a b)))
+| PROC_bnot : forall x a ,
+    x = tconst(bbool a) ->
+    procStep (proc "bor" (x::nil)) (tconst (bbool (negb a))).
 (**
    This function will reduce lists of terms to values (hopefully)
    small step.
  *)
 (**
    These next two definitions are shamelessy borrowed from
-   Software Foundations SmallStep.v
+   Software Foundations SmallStep.v. To allow me to define a
+   Multistep reduction easily.
  *)
 Definition relation (X: Type) := X -> X -> Prop.
 Inductive multi {X:Type} (R: relation X) : relation X :=
@@ -150,6 +177,18 @@ Inductive multi {X:Type} (R: relation X) : relation X :=
                     multi R y z ->
                     multi R x z.
 
+(**
+   Here we have our relation that defines a small step semantics.
+   Currently handles:
+   - All normal Lambda calclus application rules
+   - Added If statements that worked with the constant  booleans.
+   - Two procedure rules:
+      + The first takes a list of values and a procedure name and
+      converts the procedure into a satisfying term.
+      + The second reduces a list of terms into a list of values. This
+      is to make sure that all code that makes it to the procedure phase
+      can actually be run by my procedure code.
+ *)
 Reserved Notation "t1 '==>' t2" (at level 40).
 Inductive step : term -> term -> Prop :=
 | ISWIM_App_Abs : forall x t1 v2,
@@ -162,6 +201,17 @@ Inductive step : term -> term -> Prop :=
     value v1 -> 
     t2 ==> t2' ->
     (tapp v1 t2) ==> (tapp v1 t2')
+| ISWIM_If_True : forall v1 t1 t2,
+    value v1 ->
+    v1 = tconst(bbool true) ->
+    (tif v1 t1 t2) ==> t1
+| ISWIM_If_False: forall v1 t1 t2,
+    value v1 ->
+    v1 = tconst(bbool false) ->
+    (tif v1 t1 t2 ) ==> t2
+| ISWIM_If_Abs: forall t1 t1' t2 t3,
+    t1 ==> t1' -> 
+    (tif t1 t2 t3 ) ==> (tif t1' t2 t3)
 | ISWIM_Proc_Abs : forall vs name term,
     list_of_values vs ->
     def_proc name ->
@@ -175,16 +225,25 @@ with
 reduceList : list term -> list term -> Prop :=
 | emptyList :
     reduceList [] []
+| reducedTerm : forall v ts  xs,
+    value v ->
+    reduceList xs ts ->
+    reduceList (v::xs) (v::ts)
 | reduceTerm : forall  t ts x xs,
     x ==> t ->
     reduceList xs ts -> 
     reduceList (x::xs) (t::ts)
 where "t1 '==>' t2" := (step t1 t2).
-
+(**
+   Here added multi step. Again shamelessly borrowed from Software Foundations.
+ *)
 Hint Constructors step.
 Notation multistep := (multi step).
 Notation "t1 '==>*' t2" := (multistep t1 t2) (at level 40).
 
+(**
+   This first example just adds a constant by one.
+ *)
 Lemma proc_example1 :
   (tproc (proc "add1" [(tconst (bnum 5))])) ==>* (tconst (bnum 6)).
 Proof.
@@ -195,11 +254,12 @@ Proof.
   - constructor.
   - apply PROC_Add1 with (x := tconst(bnum 5)) .
     + simpl. reflexivity.
-    + simpl. left. reflexivity.
-    + reflexivity.
   - simpl. constructor.
 Qed.
 
+(**
+ This next example takes two constants and multiplies them together
+ *)
 Lemma proc_example2 :
   (tproc (proc "*" [(tconst (bnum 2));(tconst (bnum 3))])) ==>* (tconst (bnum 6)).
 Proof.
@@ -209,13 +269,15 @@ Proof.
   - constructor.
   - eapply PROC_mult.
     + simpl. reflexivity.
-    + split.
-      * simpl. left. reflexivity.
-      * simpl. right. left. reflexivity.
-    + reflexivity.
     + reflexivity.
   - simpl. constructor.
 Qed.
+
+(**
+   This code tests reduction of the list of values. This takes a very simple
+   Lambda function (\x.x) and applies it with a constant so it just returns the
+   constant. 
+ *)
 
 Lemma proc_example3 :
   (tproc (proc "add1" [(tapp (tabs "x" (tvar "x")) (tconst (bnum 2)))])) ==>* (tconst (bnum 3)).
@@ -223,14 +285,44 @@ Proof.
   eapply multi_step.
   apply ISWIM_Proc_App.
   - constructor.
-  - constructor.
+  - apply reduceTerm.
     + constructor. constructor.
     + constructor.
   - simpl. eapply multi_step.
     + constructor.
       * repeat constructor.
       * constructor.
-      * eapply PROC_Add1. simpl. constructor. constructor. reflexivity.
-        reflexivity.
+      * eapply PROC_Add1. constructor.
     + simpl. constructor.
 Qed. 
+
+(**
+   This example is basically true /\ (iszero 1). Which returns false.
+   Proving this example with multistep actually fixed a lot of bugs and
+   ambiguitities in my implementation of step.
+ *)
+Lemma proc_example4 :
+ (tproc (proc "band" [((tconst (bbool true)));(tproc (proc "iszero" [(tconst (bnum 1))]))])) ==>* (tconst (bbool false)).
+Proof.
+  eapply multi_step.
+  apply ISWIM_Proc_App.
+  - constructor.
+  - try constructor; simpl. constructor.
+    apply reduceTerm. try constructor; simpl.
+    constructor. constructor. constructor.
+    constructor. econstructor. constructor. constructor.
+    constructor.
+  - simpl. eapply multi_step.
+    repeat constructor; simpl.
+    simpl. constructor.
+Qed.
+
+Definition normal_form {X:Type} (R:relation X) (t:X) : Prop :=
+  not (exists t', R t t').
+
+
+Lemma value_is_nf : forall v, value v -> normal_form step v.
+Proof.
+  intros. unfold normal_form. intros F.
+  induction H; destruct F;inversion H.
+Qed.
