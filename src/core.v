@@ -1,13 +1,13 @@
-(** *ISWIM: Lots of extensions to the Lambda Calculus*)
+(** *Extending the Lambda Calculus in different ways.*)
 (**
    Author : Ivan Quiles
    Note:
-   There is  borrowed material from the Software Foundations
-   Textbook series. Mainly STLC.v and SmallStep.v
+   There is borrowed material from the Software Foundations
+   Textbook series. Mainly from the 2nd textbook.
  *)
 
 (** 
-  ISWIM is an extension of the Lambda Calculus with both primitive values and
+  Here I am extending the Lambda Calculus with both primitive values and
  primitive operations. So now we need a second concept of reduction where we handle
  turning these primitive operations into actual values in our Lambda Calculus.
  *)
@@ -16,13 +16,13 @@ Require Import Coq.Strings.String.
 Require Import Coq.Lists.List.
 Import ListNotations.
 Require Import Coq.Init.Datatypes.
-
-
+From LF Require Import Maps.
+Module Attempt1.
 (**
    Here are the terms of our language. The first three terms are from the
    regular lambda calculus. However we now have new terms for constants and for
-   procedures. Procedures are the built in functions of this ISWIM programming
-   language. We will soon define some built in procedures.
+   procedures. Procedures are the built in functions of programming
+   languages. We will soon define some built in procedures.
 
    The goal of defining it this way is to make it easier to define procedures
    If you want to attempt to add some go ahead! You need to add it to the
@@ -115,7 +115,7 @@ where "'[' x ':=' s ']' t" := (subst x s t).
 Open Scope list_scope.
 (**
    This is how procedures are converted into equivalent Coq expressions.
-   This relation is used in the small step reduction of ISWIM below.
+   This relation is used in the small step reduction of below.
    Includes:
    - add1
    - sub1
@@ -317,11 +317,342 @@ Qed.
 Definition normal_form {X:Type} (R:relation X) (t:X) : Prop :=
   not (exists t', R t t').
 
-(**
-   Small Lemma to show that values cannot be reduced any further.
+(** The issue with adding arbitrary procedures is now we have very trivial
+    stuck terms like this. Here we have a procedure named
+    foo which doesn't actually exist in our language. If we actually
+    were to attemp to prove this with multistep we wouldn't be able to get too far.
  *)
-Lemma value_is_nf : forall v, value v -> normal_form step v.
+
+Definition stuck (t : term) : Prop :=
+  (normal_form step t) /\ not (value t).
+
+Example stuck_term : exists t, stuck t.
 Proof.
-  intros. unfold normal_form. intros F.
-  induction H; destruct F;inversion H.
+  exists (tproc (proc "foo" [])). split.
+  - unfold normal_form. intros F. destruct F.
+    inversion H; subst. inversion H3; subst.
+    inversion H2; subst.
+  - intros F. inversion F.
 Qed.
+
+End Attempt1.
+
+(**
+   Now we are going to be smarter about the design of how we add procedures
+   and while we are at it we are going to add Types to this language!
+   Also a bunch of other stuff. The goal I wanted to achieve with this final
+   project was to learn what is to get some practice with the stuff we learned
+   in class. That attempt above was just me naively defining some things. 
+ *)
+
+Module Attempt2.
+
+  Inductive type : Type :=
+  | Bool : type
+  | Nat : type
+  | Arrow : type -> type -> type
+  | List : type -> type
+  | Prod : type -> type -> type.
+(**
+   This time instead of adding procedues and a weird coinductive type we are
+   going to add the them into the terms of our language. This is going to
+   lead to their being a lot of terms but it will simplify the step relation
+   GREATLY.
+
+   Also my original project was to do something similar to Scheme so I'm going
+   to add some minor extensions so that I can get a little closer to that goal.
+   Fixpoints, let bindings, pairs and of course Lists!
+ *)
+  Inductive term : Type :=
+  (* Constants *)
+  | tnum : nat -> term
+  | tbool : bool -> term
+  (* Base Lambda Calc*)
+  | tvar : string -> term
+  | tapp : term -> term -> term
+  | tabs : string -> type -> term -> term
+  (* If statement *)
+  | tif : term -> term -> term -> term
+  (*Lots of very basic procedures *)
+  | tadd1 : term -> term
+  | tsub1 : term -> term
+  | tiszero : term -> term
+  | tplus : term -> term -> term
+  | tsub : term -> term -> term
+  | tmul : term -> term -> term
+  | tor : term -> term -> term
+  | tand : term -> term -> term
+  | tnot : term -> term
+  (* Product Types*)
+  | tpair : term -> term -> term
+  | tfst : term -> term
+  | tsnd : term -> term
+  (* List constructors*)
+  | tnil : type -> term
+  | tcons : term -> term -> term
+  | tlcase : term -> term -> string -> string -> term -> term
+  (* Let bindings*)
+  | tlet : string -> term -> term -> term
+  (*Fixpoints!*)
+  | tfix : term -> term.
+
+  (**
+     Values are free variables, the constants we are adding to our language,
+   and abstractions are also values.
+   *)
+  Inductive value : term -> Prop :=
+  | v_var : forall s,
+      value (tvar s)
+  | v_num: forall v,
+      value (tnum v)
+  | v_bool : forall v,
+      value (tbool v)
+  | v_abs : forall s T t,
+      value (tabs s T t)
+  | v_nil : forall T,
+      value (tnil T)
+  | v_cons : forall v1 v2,
+      value v1 -> value v2 -> value (tcons v1 v2).
+
+  (**
+     Now we have to define subsitution, steps, and typing for all this!
+     This is going to be a lot of typing
+   *)
+Reserved Notation "'[' x ':=' s ']' t" (at level 20).
+Fixpoint subst (x:string) (s:term) (t:term) : term :=
+  match t with
+  | tbool x => tbool x
+  | tnum x => tnum x
+  | tvar x' =>
+      if eqb x x' then s else t
+  | tabs x' T t1 =>
+      tabs x' T (if eqb x x' then t1 else ([x:=s] t1))
+  | tapp t1 t2 => tapp ([x:=s] t1) ([x:=s] t2)
+  | tif t1 t2 t3 => tif ([x:=s]t1) ([x:=s]t2) ([x:=s]t3)
+  | tadd1 t => tadd1 ([x:=s] t)
+  | tsub1 t => tsub1 ([x:=s] t)
+  | tiszero t => tiszero ([x:=s] t)
+  | tplus t1 t2 => tplus ([x:=s] t1) ([x:=s] t2)
+  | tsub t1 t2 => tsub([x:=s] t1) ([x:=s] t2)
+  | tmul t1 t2 => tmul ([x:=s] t1) ([x:=s] t2)
+  | tor t1 t2 => tor ([x:=s] t1) ([x:=s] t2)
+  | tand t1 t2 => tand ([x:=s] t1) ([x:=s] t2)
+  | tnot t => tnot ([x:=s] t) 
+  | tpair t1 t2 => tpair ([x:=s] t1) ([x:=s] t2)
+  | tfst t => tfst ([x:=s] t)
+  | tsnd t => tsnd ([x:=s] t)
+  | tnil T => tnil T
+  | tcons t1 t2 => tcons ([x:=s] t1) ([x:=s] t2)
+  | tlcase t1 t2 x1 x2 t3 =>
+    tlcase ([x:=s] t1) ([x:=s] t2) x1 x2
+           (if String.eqb x1 x then t3
+            else if String.eqb x2 x then t3
+                 else ([x:=s] t3))
+  | tlet x1 t1 t2 =>
+    tlet x1 (if String.eqb x1 x then t1 else ([x:=s]t1))
+         (if String.eqb x1 x then t2 else ([x:=s]t2))
+  | tfix t1 => ([x:=s] t1)
+  end
+where "'[' x ':=' s ']' t" := (subst x s t).
+
+
+Reserved Notation "t1 '==>' t2" (at level 40).
+Inductive step : term -> term -> Prop :=
+| ISWIM_App_Abs : forall x t1 T v2,
+    value v2 ->
+    (tapp (tabs x T t1) v2) ==> ([x:=v2]t1)
+| ISWIM_APP_1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tapp t1 t2) ==> (tapp t1' t2)
+| ISWIM_APP_2 : forall v1 t2 t2',
+    value v1 -> 
+    t2 ==> t2' ->
+    (tapp v1 t2) ==> (tapp v1 t2')
+| ISWIM_If_True : forall v1 t1 t2,
+    value v1 ->
+    v1 = (tbool true) ->
+    (tif v1 t1 t2) ==> t1
+| ISWIM_If_False: forall v1 t1 t2,
+    value v1 ->
+    v1 = (tbool false) ->
+    (tif v1 t1 t2 ) ==> t2
+| ISWIM_If_Abs: forall t1 t1' t2 t3,
+    t1 ==> t1' -> 
+    (tif t1 t2 t3 ) ==> (tif t1' t2 t3)
+(* Here Comes A LOT of procedure definitions!*)
+| ISWIM_Add1_value : forall n,
+  (tadd1 (tnum n)) ==> (tnum (n+1))
+| ISWIM_Add1_Abs : forall t t',
+    t ==> t' ->
+    (tadd1 t) ==> (tadd1 t')
+| ISWIM_Sub1_value : forall n,
+  (tsub1 (tnum n)) ==> (tnum (n-1))
+| ISWIM_Sub1_Abs : forall t t',
+    t ==> t' ->
+    (tsub1 t) ==> (tsub1 t')
+| ISWIM_Iszero_value : forall n,
+  (tsub1 (tnum n)) ==> (tbool (Nat.eqb n 0 ))
+| ISWIM_Iszero_Abs : forall t t',
+    t ==> t' ->
+    (tsub1 t) ==> (tsub1 t')
+| ISWIM_Plus_Abs : forall n1 n2,
+    (tplus (tnum n1) (tnum n2)) ==> (tnum (n1+n2))
+| ISWIM_Plus_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tplus t1 t2) ==> (tplus t1' t2)
+| ISWIM_Plus_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tplus v1 t2) ==> (tplus v1 t2')
+| ISWIM_Sub_Abs : forall n1 n2,
+    (tsub (tnum n1) (tnum n2)) ==> (tnum (n1-n2))
+| ISWIM_Sub_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tsub t1 t2) ==> (tsub t1' t2)
+| ISWIM_Sub_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tsub v1 t2) ==> (tsub v1 t2')
+| ISWIM_Mul_Abs : forall n1 n2,
+    (tmul (tnum n1) (tnum n2)) ==> (tnum (n1*n2))
+| ISWIM_Mul_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tmul t1 t2) ==> (tmul t1' t2)
+| ISWIM_Mul_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tmul v1 t2) ==> (tmul v1 t2')
+| ISWIM_Or_Abs : forall b1 b2,
+    (tor (tbool b1) (tbool b2)) ==> (tbool (orb b1 b2))
+| ISWIM_Or_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tor t1 t2) ==> (tor t1' t2)
+| ISWIM_Or_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tor v1 t2) ==> (tor v1 t2')
+| ISWIM_And_Abs : forall b1 b2,
+    (tand (tbool b1) (tbool b2)) ==> (tbool (andb b1 b2))
+| ISWIM_And_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tand t1 t2) ==> (tand t1' t2)
+| ISWIM_And_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tand v1 t2) ==> (tand v1 t2')
+| ISWIM_Not_Abs : forall b,
+    (tnot (tbool b) ) ==> (tbool (negb b))
+| ISWIM_Not_App1 : forall t1 t1' ,
+    t1 ==> t1' ->
+    (tnot t1) ==> (tnot t1')
+(* Now comes the other things we added. First Pairs.*)
+| ISWIM_Pair1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tpair t1 t2) ==> (tpair t1' t2)
+| ISWIM_Pair2 : forall v1 t2 t2',
+    value v1 -> 
+    t2 ==> t2' ->
+    (tpair v1 t2) ==> (tpair v1 t2')
+| ISWIM_Fst_Abs : forall v1 v2,
+    value v1 ->
+    value v2 ->
+    (tfst (tpair v1 v2)) ==> v1
+| ISWIM_Fst_App : forall t1 t1',
+    t1 ==> t1' ->
+    (tfst t1) ==> (tfst t1')
+| ISWIM_Snd_Abs : forall v1 v2,
+    value v1 ->
+    value v2 ->
+    (tsnd (tpair v1 v2)) ==> v2
+| ISWIM_Snd_App : forall t1 t1',
+    t1 ==> t1' ->
+    (tsnd t1) ==> (tsnd t1')
+(*Lists are now coming up*)
+| ISWIM_Cons_App1 : forall t1 t1' t2,
+    t1 ==> t1' ->
+    (tcons t1 t2) ==> (tcons t1' t2)
+| ISWIM_Cons_App2 : forall v1 t2 t2',
+    value v1 ->
+    t2 ==> t2' ->
+    (tcons v1 t2) ==> (tcons v1 t2')
+| ISWIM_Case_App1 : forall t1 t1' t2 x1 x2 t3,
+    t1 ==> t1' ->
+    (tlcase t1 t2 x1 x2 t3) ==> (tlcase t1' t2 x1 x2 t3)
+| ISWIM_Case_App2 : forall T t2 x1 x2 t3,
+    (tlcase (tnil T) t2 x1 x2 t3) ==> t2
+| ISWIM_Case_App3 : forall v1 v2 t2 x1 x2 t3,
+    value v1 ->
+    value v2 ->
+    (tlcase (tcons v1 v2) t2 x1 x2 t3) ==> ([x1:=v1]([x2:=v2]t3))
+| ISWIM_Let_Abs : forall x v t,
+    value v ->
+    (tlet x v t) ==> ([x:=v]t)
+| ISWIM_Let_App : forall x t1 t1' t2,
+    t1 ==> t1' ->
+    (tlet x t1 t2) ==> (tlet x t1' t2)
+| ISWIM_Fixpoint_Abs : forall x1 T t1,
+    (tfix (tabs x1 T t1)) ==> [x1:= (tfix (tabs x1 T t1))] t1
+| ISWIM_Fixpoint_App : forall t1 t1',
+    (tfix t1) ==> (tfix t1')
+where "t1 '==>' t2" := (step t1 t2).
+
+Definition context := partial_map type.
+
+Reserved Notation "Gamma '|-' t '∈' T" (at level 40).
+
+Inductive has_type : context -> term -> type -> Prop :=
+| T_Num : forall Gamma n,
+    Gamma |- (tnum n) ∈ Nat
+| T_Bool: forall Gamma b,
+    Gamma |- (tbool b) ∈ Bool
+| T_Var : forall Gamma x T,
+    Gamma x = Some T -> 
+    Gamma |- (tvar x) ∈ T
+| T_Abs : forall Gamma x T1 t T2,
+    (update Gamma x T1) |- t ∈ T2 ->
+    Gamma |- (tabs x T1 t) ∈ (Arrow T1 T2)
+| T_App : forall T1 T2 Gamma t1 t2,
+    Gamma |- t1 ∈ Arrow T1 T2 ->
+    Gamma |- t2 ∈ T1 ->
+    Gamma |-(tapp t1 t2) ∈T2
+| T_Add1 : forall Gamma t1,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- (tadd1 t1) ∈ Nat
+| T_Sub1 : forall Gamma t1,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- (tsub1 t1) ∈ Nat
+| T_IsZero : forall Gamma t1,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- (tiszero t1) ∈ Bool
+| T_Plus : forall Gamma t1 t2,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- t2 ∈ Nat ->
+    Gamma |- (tplus t1 t2) ∈ Nat
+| T_Sub : forall Gamma t1 t2,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- t2 ∈ Nat ->
+    Gamma |- (tsub t1 t2) ∈ Nat
+| T_Mul : forall Gamma t1 t2,
+    Gamma |- t1 ∈ Nat ->
+    Gamma |- t2 ∈ Nat ->
+    Gamma |- (tmul t1 t2) ∈ Nat
+| T_Or : forall Gamma t1 t2,
+    Gamma |- t1 ∈ Bool->
+    Gamma |- t2 ∈ Bool ->
+    Gamma |- (tor t1 t2) ∈ Bool 
+| T_And : forall Gamma t1 t2,
+    Gamma |- t1 ∈ Bool->
+    Gamma |- t2 ∈ Bool ->
+    Gamma |- (tand t1 t2) ∈ Bool
+| T_Not : forall Gamma t,
+    Gamma |- t ∈ Bool->
+    Gamma |- (tnot t) ∈ Bool
+| T_Pair : forall Gamma t1 t2 T1 T2,
+    Gamma |- t1 ∈ T1 ->
+    Gamma |- t2 ∈ T2 ->
+    Gamma |- (tpair t1 t2) ∈ Prod T1 T2
+where "Gamma '|-' t '∈' T" := (has_type Gamma t T).
+
+Hint Constructors has_type.
+
+End Attempt2.
