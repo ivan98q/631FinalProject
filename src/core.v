@@ -17,6 +17,25 @@ Require Import Coq.Lists.List.
 Import ListNotations.
 Require Import Coq.Init.Datatypes.
 From LF Require Import Maps.
+
+Definition relation (X: Type) := X -> X -> Prop.
+Inductive multi {X:Type} (R: relation X) : relation X :=
+  | multi_refl : forall (x : X), multi R x x
+  | multi_step : forall (x y z : X),
+                    R x y ->
+                    multi R y z ->
+                    multi R x z.
+Ltac solve_by_inverts n :=
+  match goal with | H : ?T |- _ =>
+  match type of T with Prop =>
+    solve [
+      inversion H;
+      match n with S (S (?n')) => subst; solve_by_inverts (S n') end ]
+  end end.
+
+Definition normal_form {X:Type} (R:relation X) (t:X) : Prop :=
+  not (exists t', R t t').
+
 Module Attempt1.
 (**
    Here are the terms of our language. The first three terms are from the
@@ -166,13 +185,7 @@ Inductive procStep : procedure -> term -> Prop :=
    Software Foundations SmallStep.v. To allow me to define a
    Multistep reduction easily.
  *)
-Definition relation (X: Type) := X -> X -> Prop.
-Inductive multi {X:Type} (R: relation X) : relation X :=
-  | multi_refl : forall (x : X), multi R x x
-  | multi_step : forall (x y z : X),
-                    R x y ->
-                    multi R y z ->
-                    multi R x z.
+
 
 (**
    Here we have our relation that defines a small step semantics.
@@ -314,9 +327,6 @@ Proof.
     simpl. constructor.
 Qed.
 
-Definition normal_form {X:Type} (R:relation X) (t:X) : Prop :=
-  not (exists t', R t t').
-
 (** The issue with adding arbitrary procedures is now we have very trivial
     stuck terms like this. Here we have a procedure named
     foo which doesn't actually exist in our language. If we actually
@@ -348,6 +358,7 @@ End Attempt1.
 Module Attempt2.
 
   Inductive type : Type :=
+  | Unit : type
   | Bool : type
   | Nat : type
   | Arrow : type -> type -> type
@@ -394,7 +405,9 @@ Module Attempt2.
   (* Let bindings*)
   | tlet : string -> term -> term -> term
   (*Fixpoints!*)
-  | tfix : term -> term.
+  | tfix : term -> term
+  | tunit : term (*Unit to allow sequencing*)
+  | tsequence : term -> term -> term. (*Added sequencing but need state to make it work.*)
 
   (**
      Values are free variables, the constants we are adding to our language,
@@ -412,8 +425,12 @@ Module Attempt2.
   | v_nil : forall T,
       value (tnil T)
   | v_cons : forall v1 v2,
-      value v1 -> value v2 -> value (tcons v1 v2).
-
+      value v1 -> value v2 -> value (tcons v1 v2)
+  | v_pair : forall v1 v2,
+      value v1 -> value v2 -> value (tpair v1 v2)
+  | v_unit :
+      value (tunit).
+Hint Constructors value.
   (**
      Now we have to define subsitution, steps, and typing for all this!
      This is going to be a lot of typing
@@ -452,6 +469,8 @@ Fixpoint subst (x:string) (s:term) (t:term) : term :=
     tlet x1 (if String.eqb x1 x then t1 else ([x:=s]t1))
          (if String.eqb x1 x then t2 else ([x:=s]t2))
   | tfix t1 => ([x:=s] t1)
+  | tunit => tunit
+  | tsequence t1 t2 => tsequence ([x:=s]t1) ([x:=s]t2)
   end
 where "'[' x ':=' s ']' t" := (subst x s t).
 
@@ -491,10 +510,10 @@ Inductive step : term -> term -> Prop :=
     t ==> t' ->
     (tsub1 t) ==> (tsub1 t')
 | ISWIM_Iszero_value : forall n,
-  (tsub1 (tnum n)) ==> (tbool (Nat.eqb n 0 ))
+  (tiszero (tnum n)) ==> (tbool (Nat.eqb n 0 ))
 | ISWIM_Iszero_Abs : forall t t',
     t ==> t' ->
-    (tsub1 t) ==> (tsub1 t')
+    (tiszero t) ==> (tiszero t')
 | ISWIM_Plus_Abs : forall n1 n2,
     (tplus (tnum n1) (tnum n2)) ==> (tnum (n1+n2))
 | ISWIM_Plus_App1 : forall t1 t1' t2,
@@ -594,13 +613,26 @@ Inductive step : term -> term -> Prop :=
     (tfix (tabs x1 T t1)) ==> [x1:= (tfix (tabs x1 T t1))] t1
 | ISWIM_Fixpoint_App : forall t1 t1',
     (tfix t1) ==> (tfix t1')
+| ISWIM_Sequence_Abs : forall v1 t2 ,
+    value v1 -> 
+    (tsequence v1 t2) ==> t2
+| ISWIM_Sequence_Convert : forall t1 t1' t2 ,
+    t1 ==> t1' ->
+    (tsequence t1 t2) ==> (tsequence t1' t2)
 where "t1 '==>' t2" := (step t1 t2).
+
+Hint Constructors step.
+Notation multistep := (multi step).
+Notation "t1 '==>*' t2" := (multistep t1 t2) (at level 40).
+Hint Constructors multi.
 
 Definition context := partial_map type.
 
 Reserved Notation "Gamma '|-' t '∈' T" (at level 40).
 
 Inductive has_type : context -> term -> type -> Prop :=
+| T_Unit : forall Gamma,
+    Gamma |- (tunit) ∈ Unit
 | T_Num : forall Gamma n,
     Gamma |- (tnum n) ∈ Nat
 | T_Bool: forall Gamma b,
@@ -651,8 +683,198 @@ Inductive has_type : context -> term -> type -> Prop :=
     Gamma |- t1 ∈ T1 ->
     Gamma |- t2 ∈ T2 ->
     Gamma |- (tpair t1 t2) ∈ Prod T1 T2
+| T_Fst : forall Gamma t1 T1 T2,
+    Gamma |- t1 ∈ Prod T1 T2 ->
+    Gamma |- (tfst t1) ∈ T1
+| T_Snd : forall Gamma t1 T1 T2,
+    Gamma |- t1 ∈ Prod T1 T2 ->
+    Gamma |- (tsnd t1) ∈ T2
+| T_Nil : forall Gamma T,
+    Gamma |- (tnil T) ∈ List T
+| T_Cons : forall Gamma t1 t2 T,
+    Gamma |- t1 ∈ T ->
+    Gamma |- t2 ∈ (List T) ->
+    Gamma |- (tcons t1 t2) ∈ (List T)
+| T_LCase : forall Gamma t1 t2 x1 x2 t3 T1 T2,
+    Gamma |- t1 ∈ List T1  ->
+    Gamma |- t2 ∈ T2 ->
+    (update (update Gamma x1 T1) x2 (List T1)) |- t3 ∈ T2 ->
+    Gamma |- (tlcase t1 t2 x1 x2 t3) ∈ T2
+| T_Let : forall Gamma x t1 T1 t2 T2,
+    Gamma |- t1 ∈ T1 ->
+    (update Gamma x T1) |- t2 ∈ T2 ->
+    Gamma |- (tlet x t1 t2) ∈ T2
+| T_Fix : forall Gamma t1 T,
+    Gamma |- t1 ∈ (Arrow T T) ->
+    Gamma |- (tfix t1) ∈ T
+| T_Seq : forall Gamma t1 t2 T1 T2,
+    Gamma |- t1 ∈ T1 ->
+    Gamma |- t2 ∈ T2 ->
+    Gamma |- (tsequence t1 t2) ∈ T2
 where "Gamma '|-' t '∈' T" := (has_type Gamma t T).
 
 Hint Constructors has_type.
 
+(* So now that we have all of these relations. Let's mess around with it a bit*)
+(*The following is a lot of stupid sanity checks.*)
+
+Example typechecking1 :
+  empty |- (tnum 1) ∈ Nat.
+Proof. auto. Qed.
+
+Example typechecking2 :
+  empty |- (tadd1 (tnum 2)) ∈ Nat.
+Proof. auto. Qed.
+
+Example typechecking3 :
+  empty |- (tpair (tor (tbool true) (tbool false))
+                 (tsub1 (tnum 3))) ∈ Prod Bool Nat.
+Proof. auto. Qed.
+
+Example typechecking4 :
+  empty |- (tplus (tnum 2) (tnum 100)) ∈ Nat.
+Proof. auto. Qed.
+
+Example code1 :
+  (tlet "x" (tnum 2) (tadd1 (tvar "x"))) ==>* (tnum 3).
+Proof.
+  eapply multi_step. eauto. simpl. eapply multi_step.
+  eauto. simpl. eapply multi_refl.
+Qed.
+
+Theorem progress : forall t T,
+    empty |- t ∈ T ->
+    value t \/ exists t', t ==> t'.
+Proof with auto.
+  intros.
+  remember empty as Gamma.
+  generalize dependent HeqGamma.
+  induction H; intros; subst.
+  - try (left; constructor).
+  - try (left; constructor).
+  - try (left; constructor).
+  - try (left; constructor).
+  - try (left; constructor).
+  - right. destruct IHhas_type1; subst...
+    + destruct IHhas_type2; subst...
+      inversion H; subst; try solve_by_inverts 2.
+      exists (subst x t2 t)...
+      inversion H2; subst. exists (tapp t1 x)...
+    + inversion H1; subst. exists (tapp x t2)...
+  - right. destruct IHhas_type; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    exists (tnum (n+1))...
+    inversion H0; subst. exists (tadd1 x)...
+  - right. destruct IHhas_type; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    exists (tnum (n-1))... inversion H0;subst. exists(tsub1 x)...
+  - right. destruct IHhas_type; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    induction n. exists (tbool true)... constructor.
+    exists (tbool false). constructor.
+    inversion H0; subst. exists(tiszero x)...
+  - right. destruct IHhas_type1; subst...
+    destruct IHhas_type2; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    inversion H0; subst; try solve_by_inverts 2.
+    exists (tnum (n+n0))...
+    inversion H2; subst. exists (tplus t1 x)...
+    inversion H1; subst. exists (tplus x t2)...
+  - right. destruct IHhas_type1; subst...
+    destruct IHhas_type2; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    inversion H0; subst; try solve_by_inverts 2.
+    exists (tnum (n-n0))...
+    inversion H2; subst. exists (tsub t1 x)...
+    inversion H1; subst. exists (tsub x t2)...
+  - right. destruct IHhas_type1; subst...
+    destruct IHhas_type2; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    inversion H0; subst; try solve_by_inverts 2.
+    exists (tnum (n*n0))...
+    inversion H2; subst. exists (tmul t1 x)...
+    inversion H1; subst. exists (tmul x t2)...
+ - right. destruct IHhas_type1; subst...
+    destruct IHhas_type2; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    inversion H0; subst; try solve_by_inverts 2.
+    inversion H1; subst.
+    exists (tbool (orb b b0))...
+    inversion H2; subst. exists (tor t1 x)...
+    inversion H1; subst. exists (tor x t2)...
+ - right. destruct IHhas_type1; subst...
+   destruct IHhas_type2; subst...
+    inversion H; subst; try solve_by_inverts 2.
+    inversion H0; subst; try solve_by_inverts 2.
+    inversion H1; subst.
+    exists (tbool (andb b b0))...
+    inversion H2; subst. exists (tand t1 x)...
+    inversion H1; subst. exists (tand x t2)...
+ - right. destruct IHhas_type; subst...
+   inversion H; subst; try solve_by_inverts 2.
+   destruct b. exists (tbool false)... constructor.
+   exists (tbool true)... constructor.
+   inversion H0; subst.  exists(tnot x)...
+ - destruct IHhas_type1...
+   destruct IHhas_type2...
+   + inversion H2; subst. right. exists (tpair t1 x)...
+   + inversion H1; subst. right. exists (tpair x t2)...
+ - destruct IHhas_type...
+   inversion H; subst; try solve_by_inverts 2.
+   inversion H0; subst; try solve_by_inverts 2.
+   right. exists (t0)...
+   inversion H0; subst. right. exists (tfst x)...
+ - destruct IHhas_type...
+   inversion H; subst; try solve_by_inverts 2.
+   inversion H0; subst; try solve_by_inverts 2.
+   right. exists (t2)...
+   inversion H0; subst. right. exists (tsnd x)...
+ - left. constructor.
+ - destruct IHhas_type1...
+   destruct IHhas_type2...
+   inversion H2; subst.
+   right. exists (tcons t1 x)...
+   inversion H1; subst. right. exists( tcons x t2)...
+ - right.
+   destruct IHhas_type1...
+   + inversion H; subst; try solve_by_inverts 2.
+     * exists t2...
+     * exists ([x1:=t0]([x2:= t4]t3))...
+       inversion H2; subst; try solve_by_inverts 2.
+       constructor...
+   + inversion H2; subst.
+     exists (tlcase x t2 x1 x2 t3)...
+ - right.
+   destruct IHhas_type1...
+   exists([x:=t1]t2)...
+   inversion H1;subst.  exists(tlet x x0 t2)...
+ - right.
+   destruct IHhas_type...
+   inversion H0; subst; try solve_by_inverts 2.
+   exists ([s:= (tfix (tabs s T0 t))] t)...
+   inversion H0; subst. exists (tfix x)...
+ - destruct IHhas_type1...
+   + right. exists(t2)...
+   + right. inversion H1;subst.
+     exists(tsequence x t2)...
+Qed.
+
+(**
+   Okay, I'm going to try to show that there is a term in this language that
+   does not halt.
+ *)
+Definition halts (t:term) : Prop := exists t', t ==>* t' /\ value t'. 
+
+Theorem does_not_normalize : exists t T, (has_type empty t T /\ not (halts t)).
+Proof with auto.
+  exists (tfix (tabs "f" (Arrow Nat Nat) (tabs "x" Nat (tplus (tnum 1) (tapp (tvar "f" )(tvar "x")))))).
+  exists (Arrow Nat Nat).
+  split.
+  - repeat econstructor.
+  - intros F. unfold halts in F.
+    induction F; inversion H; subst; clear H.
+    inversion H0; subst; clear H0.
+    + inversion H1.
+    + inversion H2; subst. induction H1; subst; try solve_by_inverts 2.
+      * inversion H2; subst; try solve_by_inverts 1.
 End Attempt2.
