@@ -860,21 +860,27 @@ Proof with auto.
 Qed.
 
 (**
-   Okay, I'm going to try to show that there is a term in this language that
+   kay, I'm going to try to show that there is a term in this language that
    does not halt.
  *)
-Definition halts (t:term) : Prop := exists t', t ==>* t' /\ value t'. 
+Lemma value_is_nf : forall v, value v -> normal_form step v.
+Proof with eauto.
+  intros. induction H; intros [t' H10]; inversion H10...
+Qed.
 
+Definition halts (t:term) : Prop := exists t',  t ==> t' /\ value t'. 
 Theorem does_not_normalize : exists t T, (has_type empty t T /\ not (halts t)).
-Proof with auto.
-  exists (tfix (tabs "f" (Arrow Nat Nat) (tabs "x" Nat (tplus (tnum 1) (tapp (tvar "f" )(tvar "x")))))).
-  exists (Arrow Nat Nat).
+Proof with eauto.
+  exists (tapp (tfix (tabs "f" (Arrow Nat Nat) (tabs "x" Nat (tplus (tnum 1) (tapp (tvar "f" )(tvar "x")))))) (tnum 1)).
+  exists (Nat).
   split.
   - repeat econstructor.
   - intros F. unfold halts in F.
-    induction F; inversion H; subst; clear H.
-    inversion H0; subst; clear H0.
-    + inversion H1.
-    + inversion H2; subst. induction H1; subst; try solve_by_inverts 2.
-      * inversion H2; subst; try solve_by_inverts 1.
+    induction F; subst. induction H; subst.
+    inversion H0 ;subst. inversion H; subst; 
+    inversion H2;subst. inversion H; subst.
+    inversion H; subst. inversion H; subst.
+    inversion H; subst. inversion H; subst.
+    inversion H; subst. inversion H; subst.
+Qed.    
 End Attempt2.
